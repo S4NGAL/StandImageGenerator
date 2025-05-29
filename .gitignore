@@ -1,0 +1,11 @@
+/.env
+.env
+/node_modules
+node_modules
+/aisummit
+aisummit
+./__pychache__
+__pychache__
+__pycache__/
+*.py[cod]
+*.pyc

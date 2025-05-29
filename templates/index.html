@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>AI Summit Photo Booth</title>
+  <style>
+    html, body { margin:0; padding:0; }
+
+    /* Dış kapsayıcı: 1080×1920, arka plan fotoğrafı */
+    #outer {
+      width: 100vw;
+      height: 100vh;
+      margin: 0 auto;
+      position: relative;
+      background: url('../static/mainframe.png') no-repeat center center;
+      background-size: cover;
+    }
+
+    /* İç kapsayıcı: tam 1024×1024, taşanı gizle */
+    #inner {
+      width: 1024px;
+      height: 1024px;
+      position: absolute;
+      top: 42.6%; left: 50.4%;
+      transform: translate(-50%, -50%);
+      overflow: hidden;
+      background: #5dffa3; /* istersen kaldırabilirsin */
+    }
+
+    /* Video’yu inner’ın tümüne yay, object-fit ile kırp */
+    #inner video {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;   /* en-boy koruyup kırpar */
+    }
+
+    #inner img.captured {
+      display: none;
+      z-index: 3;
+    }
+
+
+    /* 4) Stilize fotoğraf katmanı */
+#inner img.stylized {
+  position: absolute;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  object-fit: cover;
+  display: none;  /* JS ile görünür yaptığınızda block olacak */
+  z-index: 4;
+  transform: scale(1.2);
+  height: 123.4%;
+}
+
+
+/* QR kodu: genişlik %20, fotoğrafın altına konumlu */
+#inner img.qr {
+  position: absolute;
+  /* top yerine bottom kullanalım */
+  bottom: 10px;
+  left: 50%;
+  transform: translate(-160px, 690px);  /* Oranı koruyarak kare: genişliğin %20’si kadar */
+  width: 30%;
+  height: auto;
+  object-fit: contain;
+  display: none;  /* JS ile görünür yaptığınızda block olacak */
+  z-index: 5;
+  background: rgba(255,255,255,0.8);
+  padding: 5px;
+  border-radius: 4px;
+}
+
+    /* 7) Mesaj metni */
+    #info {
+      position: absolute;
+      bottom: 20px;
+      width: 100%;
+      text-align: center;
+      font-family: sans-serif;
+      color: white;
+      text-shadow: 0 0 5px black;
+      pointer-events: none;
+      z-index: 15;
+    }
+
+    /* Canvas / img’ler de inner içinde aynı şekilde */
+    #inner canvas,
+    #inner img {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: none;
+    }
+    #inner canvas { display: none; } /*SON*/
+    
+    /* Üst katman siluet */
+    #inner img.overlay {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      pointer-events: none;
+      z-index: 10;
+      display: block;
+    }
+
+    /* Overlay tüm görüntüyü kaplasın, flex ile ortalansın */
+#spinner-overlay {
+  position: absolute;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  background: rgba(0, 0, 0, 0.5);   /* yarı-şeffaf koyu gri */
+  display: none;                     /* varsayılan gizli */
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  z-index: 1000;                     /* her şeyin üstünde */
+}
+
+/* Neon mavi spinner çember */
+.spinner {
+  width: 80px; height: 80px;
+  border: 8px solid rgba(0,0,0,0.1);
+  border-top: 8px solid #00ffff;     /* neon mavi */
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+/* Spinner altındaki açıklama metni */
+.spinner-text {
+  margin-top: 16px;
+  color: #00ffff;                    /* neon mavi */
+  font-family: sans-serif;
+  font-size: 1.1em;
+  text-shadow: 0 0 8px rgba(0,255,255,0.5);
+}
+
+/* Dönme animasyonu */
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+  </style>
+</head>
+<body>
+  <div id="outer">
+    <div id="inner">
+      <!-- processing overlay -->
+      <div id="spinner-overlay">
+        <div class="spinner"></div>
+        <div class="spinner-text">AI brushstrokes in progress…</div>
+      </div>
+      <div id="info">PRESS SPACE TO CAPTURE</div>
+      <!-- 1. E-posta alanı -->
+      <video id="video" autoplay playsinline></video>
+      <canvas id="canvas"></canvas>
+      <img class="captured" id="captured" alt="Captured Photo" />
+      <img class="stylized" id="stylized" alt="Stylized Photo" />
+      <img class="qr"       id="qr"       alt="QR Code" />
+      <img class="overlay" id="overlay" src="../static/silhouette.png" alt="Siluet Overlay" />
+    </div>
+  </div>
+
+  <script>
+  const video = document.getElementById("video"),
+        canvas = document.getElementById("canvas"),
+        capImg = document.getElementById("captured"),
+        stylImg = document.getElementById("stylized"),
+        qrImg   = document.getElementById("qr"),
+        info    = document.getElementById("info"),
+        overlay = document.getElementById("overlay");
+
+
+
+    // —— 0) Geçici izin alıp kapatan fonksiyon —————————————
+    async function ensurePermissions() {
+      try {
+        const tmp = await navigator.mediaDevices.getUserMedia({ video: true });
+        tmp.getTracks().forEach(t => t.stop());
+      } catch (e) {
+        console.warn("Kamera izni alınamadı:", e);
+      }
+    }
+
+    // —— 1) Öncelikli kamerayı seçip stream başlatan fonksiyon ———
+    async function startPreferredCamera() {
+      await ensurePermissions();
+
+      const devices    = await navigator.mediaDevices.enumerateDevices();
+      const videoInputs = devices.filter(d => d.kind === 'videoinput');
+      if (!videoInputs.length) {
+        console.error("Hiç kamera bulunamadı.");
+        return;
+      }
+
+      // Label'ında “USB” geçen cihazı ara; yoksa 2.'yi, onda da yoksa 1.'yi al
+      const preferred = videoInputs.find(d => /USB/i.test(d.label))
+                         || videoInputs[1]
+                         || videoInputs[0];
+      console.log("Seçilen kamera:", preferred.label, preferred.deviceId);
+
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            deviceId: { exact: preferred.deviceId },
+            width:  { ideal: 1024 },
+            height: { ideal: 1024 }
+          }
+        });
+        video.srcObject = stream;
+      } catch (err) {
+        console.error("Tercihli kamera açılamadı, varsayılanı deniyoruz:", err);
+        // Fallback
+        try {
+          const fallback = await navigator.mediaDevices.getUserMedia({ video: true });
+          video.srcObject = fallback;
+        } catch (e2) {
+          console.error("Fallback da açılamadı:", e2);
+        }
+      }
+    }
+
+// 2) Sayfa yüklendiğinde hemen çağır
+window.addEventListener("load", startPreferredCamera);
+
+    let state = "live";
+
+    async function captureAndProcess() {
+
+
+
+      // 1) Ham videodan 1024×1024 kare al
+      canvas.width = canvas.height = 1024;
+      const ctx = canvas.getContext("2d");
+      const vw = video.videoWidth, vh = video.videoHeight;
+      const side = Math.min(vw, vh);
+      const sx = (vw - side)/2, sy = (vh - side)/2;
+      ctx.drawImage(video, sx, sy, side, side, 0, 0, 1024, 1024);
+
+      //email input
+      const email = window.prompt("Lütfen e-posta adresinizi girin:");
+      
+      capImg.src = canvas.toDataURL("image/png");
+      capImg.style.display = "block";   // <-- hemen göster
+      // 2) İşlem sırasında UI
+      video.style.display = "none";
+      // 1) Overlay dolma bilgisi göster
+      document.getElementById("spinner-overlay").style.display = "flex";
+      info.textContent = "PROCESSING…";
+
+      // 3) Sunucuya gönder
+      const dataUrl = canvas.toDataURL("image/png");
+      const res = await fetch("/process", {
+        method: "POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify({ image: dataUrl, email})
+      });
+      const j = await res.json();
+
+      // 4) Stilize fotoğrafı göster
+      stylImg.src = j.stylized_url;
+      stylImg.onload = () => {
+        capImg.style.display  = "none";  // <-- ham kareyi kaldır
+        stylImg.style.display = "block";
+        info.textContent = "GENERATING QR…";
+        // 4) Overlay’ı gizle
+        document.getElementById("spinner-overlay").style.display = "none";
+      };
+
+      // 5) QR kodu göster (stylize’ı beklemeden de olabilir)
+      qrImg.src = j.qr_path;
+      qrImg.onload = () => {
+        // bir süre stilize gösterildikten sonra QR’ı da alttan ekleyebilirsin
+        qrImg.style.display = "block";
+        overlay.style.display = "none";
+        info.textContent = "PRESS SPACE TO RESET";
+        state = "done";
+      };
+      
+    }
+
+    function resetAll() {
+      // Temizle, başa dön
+      // overlay’ı kapat
+      document.getElementById("spinner-overlay").style.display = "none";
+      stylImg.style.display = qrImg.style.display = capImg.style.display  = "none";
+      overlay.style.display = "block";
+      video.style.display = "block";
+      info.textContent = "PRESS SPACE TO CAPTURE";
+      state = "live";
+    }
+
+    document.addEventListener("keydown", e => {
+      if (e.code === "Space") {
+        if (state === "live")       captureAndProcess();
+        else if (state === "done")  resetAll();
+      }
+    });
+  </script>
+</body>
+</html>
